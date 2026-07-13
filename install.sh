@@ -152,7 +152,7 @@ parse_args() {
 }
 
 load_existing_config() {
-  [[ -f "$ENV_FILE" ]] || return
+  [[ -f "$ENV_FILE" ]] || return 0
   CONFIG_LOADED=1
   set -a
   # This file is created root-owned with mode 0600 by write_config.
@@ -727,7 +727,7 @@ download_release() {
 }
 
 restore_caddy_configuration() {
-  [[ $CADDY_CHANGED -eq 1 ]] || return
+  [[ $CADDY_CHANGED -eq 1 ]] || return 0
   if [[ -n "$CADDY_CONFIG_BACKUP" && -f "$CADDY_CONFIG_BACKUP" ]]; then cp -a "$CADDY_CONFIG_BACKUP" "$CADDY_FILE"; fi
   if [[ $CADDY_HAD_SNIPPET -eq 1 && -n "$CADDY_SNIPPET_BACKUP" && -f "$CADDY_SNIPPET_BACKUP" ]]; then
     cp -a "$CADDY_SNIPPET_BACKUP" "$CADDY_SNIPPET"
@@ -740,7 +740,7 @@ restore_caddy_configuration() {
 }
 
 restore_runtime_config() {
-  [[ $CONFIG_CHANGED -eq 1 ]] || return
+  [[ $CONFIG_CHANGED -eq 1 ]] || return 0
   if [[ $CONFIG_EXISTED -eq 1 && -n "$CONFIG_BACKUP" && -f "$CONFIG_BACKUP" ]]; then cp -a "$CONFIG_BACKUP" "$ENV_FILE"; else rm -f "$ENV_FILE"; fi
   rm -f "$CONFIG_BACKUP"
   CONFIG_CHANGED=0
@@ -787,7 +787,7 @@ run_migrations() {
 }
 
 check_external_database() {
-  [[ "$DATABASE_MODE" == "external" ]] || return
+  [[ "$DATABASE_MODE" == "external" ]] || return 0
   export DATABASE_URL="$DATABASE_VALUE" NACHO_PROJECT_ROOT="$NEW_RELEASE"
   "$INSTALL_ROOT/runtime/node/bin/node" "$NEW_RELEASE/server/check-database.mjs"
 }
@@ -831,7 +831,7 @@ write_caddy_snippet() {
 }
 
 configure_caddy() {
-  [[ "$PROXY_MODE" == "caddy" ]] || return
+  [[ "$PROXY_MODE" == "caddy" ]] || return 0
   local temporary caddy_preexisting=0
   if command -v caddy >/dev/null 2>&1; then caddy_preexisting=1; fi
   preflight_caddy
@@ -860,7 +860,7 @@ configure_caddy() {
 }
 
 wait_for_public_health() {
-  [[ "$PROXY_MODE" == "caddy" ]] || return
+  [[ "$PROXY_MODE" == "caddy" ]] || return 0
   local response attempt
   for ((attempt=1; attempt<=120; attempt++)); do
     if response=$(curl -fsS "$PUBLIC_URL/api/v1/health" 2>/dev/null) && printf '%s' "$response" | grep -q '"status":"ready"'; then return; fi
