@@ -12,8 +12,12 @@ CADDY_SNIPPET="/etc/caddy/conf.d/nachopanel.caddy"
 OS_RELEASE_FILE="${NACHO_OS_RELEASE_FILE:-/etc/os-release}"
 NODE_VERSION="${NACHO_NODE_VERSION:-22.17.0}"
 POSTGRESQL_VERSION="${NACHO_POSTGRESQL_VERSION:-16}"
-VERSION="${NACHO_VERSION:-3.0.1}"
+VERSION="${NACHO_VERSION:-3.0.2}"
 REPOSITORY="${NACHO_GITHUB_REPOSITORY:-nachomao/nachopanel-deploy}"
+RELEASE_BASE_URL="${NACHO_RELEASE_BASE_URL:-}"
+NODE_BASE_URL="${NACHO_NODE_BASE_URL:-}"
+RELEASE_BASE_URL_SET=$([[ -n "${NACHO_RELEASE_BASE_URL:-}" ]] && printf 1 || printf 0)
+NODE_BASE_URL_SET=$([[ -n "${NACHO_NODE_BASE_URL:-}" ]] && printf 1 || printf 0)
 
 NODE_VERSION_SET=$([[ -n "${NACHO_NODE_VERSION:-}" ]] && printf 1 || printf 0)
 VERSION_SET=$([[ -n "${NACHO_VERSION:-}" ]] && printf 1 || printf 0)
@@ -51,6 +55,9 @@ APP_HOST="${NACHO_APP_HOST:-}"
 APP_HOST_SET=$([[ -n "${NACHO_APP_HOST:-}" ]] && printf 1 || printf 0)
 APP_PORT="${PORT:-}"
 APP_PORT_SET=$([[ -n "${PORT:-}" ]] && printf 1 || printf 0)
+API_ONLY="${NACHO_API_ONLY:-1}"
+INTERNAL_HOST="${NACHO_INTERNAL_HOST:-127.0.0.1}"
+INTERNAL_PORT="${NACHO_INTERNAL_PORT:-39001}"
 INSTALLER_HOST="${NACHO_INSTALLER_HOST:-}"
 INSTALLER_HOST_SET=$([[ -n "${NACHO_INSTALLER_HOST:-}" ]] && printf 1 || printf 0)
 INSTALLER_PORT_VALUE="${INSTALLER_PORT:-}"
@@ -96,8 +103,10 @@ usage() {
 Usage: install.sh <install|upgrade|repair|status|uninstall> [options]
 
 Options:
-  --version VERSION             Release version (default: 3.0.1)
+  --version VERSION             Release version (default: 3.0.2)
   --repository OWNER/REPO       Override the GitHub repository containing release assets
+  --release-base-url URL        HTTPS, HTTP, or file URL containing release assets
+  --node-base-url URL           HTTPS, HTTP, or file URL containing Node.js assets
   --interactive                 Force the guided deployment wizard
   --non-interactive             Never prompt; require values through flags or environment
   --public-url URL              Public HTTPS origin for NachoPanel
@@ -127,6 +136,8 @@ parse_args() {
     case "$1" in
       --version) VERSION="${2:?missing version}"; VERSION_SET=1; shift 2 ;;
       --repository) REPOSITORY="${2:?missing repository}"; REPOSITORY_SET=1; shift 2 ;;
+      --release-base-url) RELEASE_BASE_URL="${2:?missing release base URL}"; RELEASE_BASE_URL_SET=1; shift 2 ;;
+      --node-base-url) NODE_BASE_URL="${2:?missing Node.js base URL}"; NODE_BASE_URL_SET=1; shift 2 ;;
       --interactive) INTERACTION_MODE="always"; shift ;;
       --non-interactive) INTERACTION_MODE="never"; shift ;;
       --public-url) PUBLIC_URL="${2:?missing public URL}"; PUBLIC_URL_SET=1; shift 2 ;;
@@ -181,6 +192,8 @@ load_existing_config() {
   if [[ $REPOSITORY_SET -eq 0 ]]; then REPOSITORY="${NACHO_GITHUB_REPOSITORY:-$REPOSITORY}"; fi
   if [[ $VERSION_SET -eq 0 ]]; then VERSION="${NACHO_VERSION:-$VERSION}"; fi
   if [[ $NODE_VERSION_SET -eq 0 ]]; then NODE_VERSION="${NACHO_NODE_VERSION:-$NODE_VERSION}"; fi
+  if [[ $RELEASE_BASE_URL_SET -eq 0 ]]; then RELEASE_BASE_URL="${NACHO_RELEASE_BASE_URL:-}"; fi
+  if [[ $NODE_BASE_URL_SET -eq 0 ]]; then NODE_BASE_URL="${NACHO_NODE_BASE_URL:-}"; fi
 
   [[ "$DATABASE_MODE" == "local" ]] && DATABASE_MODE="managed"
   if [[ -z "$DATABASE_MODE" && -n "$DATABASE_VALUE" ]]; then DATABASE_MODE="external"; fi
@@ -283,7 +296,7 @@ run_wizard() {
   local choice use_defaults use_supplied confirmation
   WIZARD_RAN=1
   apply_defaults
-  printf '\nNachoPanel 3.0.1 guided deployment\n\n' >"$TTY_DEVICE"
+  printf '\nNachoPanel 3.0.2 guided deployment\n\n' >"$TTY_DEVICE"
 
   prompt_line "Public NachoPanel URL" "$PUBLIC_URL"
   PUBLIC_URL="$PROMPT_VALUE"
@@ -409,6 +422,9 @@ validate_configuration() {
   [[ "$NODE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Invalid Node.js version: $NODE_VERSION"
   [[ "$POSTGRESQL_VERSION" == "16" ]] || fail "Only PostgreSQL 16 is supported"
   [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Invalid GitHub repository; use OWNER/REPO"
+  for source_url in "$RELEASE_BASE_URL" "$NODE_BASE_URL"; do
+    [[ -z "$source_url" || ( "$source_url" =~ ^(https?|file)://[^[:space:]]+$ && "$source_url" != *$'\n'* && "$source_url" != *$'\r'* ) ]] || fail "Asset base URLs must use HTTP, HTTPS, or file without whitespace"
+  done
   [[ "$AGENT_AUTH_MODE" == "required" || "$AGENT_AUTH_MODE" == "disabled" ]] || fail "Agent authentication must be required or disabled"
   if [[ "$AGENT_AUTH_MODE" == "disabled" ]]; then
     [[ $CONFIG_LOADED -eq 1 || $AGENT_AUTH_CONFIRMED -eq 1 ]] || fail "Disabling agent authentication requires explicit confirmation"
@@ -417,6 +433,10 @@ validate_configuration() {
   [[ "$PROXY_MODE" == "caddy" || "$PROXY_MODE" == "external" || "$PROXY_MODE" == "none" ]] || fail "Proxy mode must be caddy, external, or none"
   if [[ ! "$DATABASE_PORT" =~ ^[0-9]+$ ]] || (( DATABASE_PORT < 1 || DATABASE_PORT > 65535 )); then fail "PostgreSQL port is invalid"; fi
   if [[ ! "$APP_PORT" =~ ^[0-9]+$ ]] || (( APP_PORT < 1 || APP_PORT > 65535 )); then fail "Application port is invalid"; fi
+  [[ "$API_ONLY" == "1" ]] || fail "Cloud deployments require NACHO_API_ONLY=1"
+  [[ "$INTERNAL_HOST" == "127.0.0.1" || "$INTERNAL_HOST" == "::1" ]] || fail "Internal API runtime must bind to a loopback address"
+  if [[ ! "$INTERNAL_PORT" =~ ^[0-9]+$ ]] || (( INTERNAL_PORT < 1 || INTERNAL_PORT > 65535 )); then fail "Internal API runtime port is invalid"; fi
+  [[ "$INTERNAL_PORT" != "$APP_PORT" ]] || fail "Internal API runtime port must differ from the public application port"
   if [[ ! "$INSTALLER_PUBLIC_PORT" =~ ^[0-9]+$ ]] || (( INSTALLER_PUBLIC_PORT < 1 || INSTALLER_PUBLIC_PORT > 65535 )); then fail "Installer public port is invalid"; fi
 
   if [[ "$PROXY_MODE" == "none" ]]; then
@@ -661,6 +681,9 @@ NACHO_PROXY_MODE="$(escape_env "$PROXY_MODE")"
 NACHO_APP_HOST="$(escape_env "$APP_HOST")"
 HOSTNAME="$(escape_env "$APP_HOST")"
 PORT="$(escape_env "$APP_PORT")"
+NACHO_API_ONLY="$(escape_env "$API_ONLY")"
+NACHO_INTERNAL_HOST="$(escape_env "$INTERNAL_HOST")"
+NACHO_INTERNAL_PORT="$(escape_env "$INTERNAL_PORT")"
 NACHO_INSTALLER_HOST="$(escape_env "$INSTALLER_HOST")"
 INSTALLER_PORT="$(escape_env "$INSTALLER_PORT_VALUE")"
 NACHO_INSTALLER_PUBLIC_PORT="$(escape_env "$INSTALLER_PUBLIC_PORT")"
@@ -677,6 +700,8 @@ DATABASE_URL="$(escape_env "$DATABASE_VALUE")"
 NACHO_DATA_DIR="$(escape_env "$DATA_DIR")"
 NACHO_ARTIFACT_DIR="$(escape_env "$DATA_DIR/artifacts")"
 EOF
+  if [[ -n "$RELEASE_BASE_URL" ]]; then printf 'NACHO_RELEASE_BASE_URL="%s"\n' "$(escape_env "$RELEASE_BASE_URL")" >>"$temporary"; fi
+  if [[ -n "$NODE_BASE_URL" ]]; then printf 'NACHO_NODE_BASE_URL="%s"\n' "$(escape_env "$NODE_BASE_URL")" >>"$temporary"; fi
   if [[ -n "$INSTALLER_PUBLIC_URL" ]]; then printf 'NACHO_INSTALLER_PUBLIC_URL="%s"\n' "$(escape_env "$INSTALLER_PUBLIC_URL")" >>"$temporary"; fi
   for name in NACHO_S3_BUCKET NACHO_S3_REGION NACHO_S3_ENDPOINT NACHO_S3_PATH_STYLE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
     if [[ -n "${!name:-}" ]]; then printf '%s="%s"\n' "$name" "$(escape_env "${!name}")" >>"$temporary"; fi
@@ -693,7 +718,8 @@ install_node_runtime() {
   case "$machine" in x86_64|amd64) node_arch="x64" ;; aarch64|arm64) node_arch="arm64" ;; *) fail "Unsupported architecture: $machine" ;; esac
   if [[ -x "$INSTALL_ROOT/runtime/node/bin/node" ]] && [[ "$($INSTALL_ROOT/runtime/node/bin/node --version)" == "v$NODE_VERSION" ]]; then return; fi
   archive="node-v$NODE_VERSION-linux-$node_arch.tar.xz"
-  base="https://nodejs.org/dist/v$NODE_VERSION"
+  base="${NODE_BASE_URL:-https://nodejs.org/dist/v$NODE_VERSION}"
+  base="${base%/}"
   staging=$(mktemp -d)
   curl -fsSL "$base/$archive" -o "$staging/$archive"
   curl -fsSL "$base/SHASUMS256.txt" -o "$staging/SHASUMS256.txt"
@@ -710,7 +736,8 @@ install_node_runtime() {
 
 download_release() {
   local base archive checksum staging expected actual unpack
-  base="https://github.com/$REPOSITORY/releases/download/v$VERSION"
+  base="${RELEASE_BASE_URL:-https://github.com/$REPOSITORY/releases/download/v$VERSION}"
+  base="${base%/}"
   archive="nachopanel-$VERSION.tar.gz"
   checksum="$archive.sha256"
   staging=$(mktemp -d)
