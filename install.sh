@@ -9,6 +9,7 @@ ENV_FILE="$CONFIG_DIR/nachopanel.env"
 UNIT_FILE="/etc/systemd/system/$SERVICE_NAME.service"
 CADDY_FILE="/etc/caddy/Caddyfile"
 CADDY_SNIPPET="/etc/caddy/conf.d/nachopanel.caddy"
+OS_RELEASE_FILE="${NACHO_OS_RELEASE_FILE:-/etc/os-release}"
 NODE_VERSION="${NACHO_NODE_VERSION:-22.17.0}"
 POSTGRESQL_VERSION="${NACHO_POSTGRESQL_VERSION:-16}"
 VERSION="${NACHO_VERSION:-3.0.1}"
@@ -516,9 +517,10 @@ EOF
 }
 
 validate_platform() {
-  [[ -r /etc/os-release ]] || fail "Cannot identify this Linux distribution"
-  # shellcheck disable=SC1091
-  source /etc/os-release
+  local ID="" VERSION_ID="" VERSION=""
+  [[ -r "$OS_RELEASE_FILE" ]] || fail "Cannot identify this Linux distribution"
+  # shellcheck disable=SC1090
+  source "$OS_RELEASE_FILE"
   case "${ID:-}" in
     ubuntu) [[ "${VERSION_ID:-}" == "22.04" || "${VERSION_ID:-}" == "24.04" ]] || fail "Supported Ubuntu versions are 22.04 and 24.04" ;;
     debian) [[ "${VERSION_ID:-}" == "12" ]] || fail "Supported Debian version is 12" ;;
@@ -554,8 +556,9 @@ reconcile_managed_cluster() {
 
 install_managed_postgresql() {
   local codename key_file keyring fingerprint existing_cluster_port cluster_port cluster_status psql password sql_file attempt
-  # shellcheck disable=SC1091
-  source /etc/os-release
+  local VERSION="" VERSION_CODENAME=""
+  # shellcheck disable=SC1090
+  source "$OS_RELEASE_FILE"
   codename="${VERSION_CODENAME:-}"
   [[ -n "$codename" ]] || fail "Linux distribution codename is unavailable"
 
