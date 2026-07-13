@@ -1,0 +1,36 @@
+[Unit]
+Description=NachoPanel management service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nachopanel
+Group=nachopanel
+WorkingDirectory=/opt/nachopanel/current
+EnvironmentFile=/etc/nachopanel/nachopanel.env
+Environment=NODE_ENV=production
+Environment=NACHO_PROJECT_ROOT=/opt/nachopanel/current
+ExecStartPre=/opt/nachopanel/runtime/node/bin/node /opt/nachopanel/current/server/migrate.mjs
+ExecStart=/opt/nachopanel/runtime/node/bin/node /opt/nachopanel/current/server/host.mjs
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=30
+UMask=0077
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/nachopanel
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,501 @@
+openapi: 3.1.0
+info:
+  title: NachoPanel Cloud Management API
+  version: 3.0.0
+servers:
+  - url: https://panel.example.com/api/v1
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Check service readiness
+      security: []
+      responses:
+        "200":
+          description: PostgreSQL and artifact storage are ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: A required dependency is unavailable
+  /auth/verify:
+    get:
+      summary: Validate a management API Key
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Key is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                properties:
+                  ok: { const: true }
+                  data:
+                    type: object
+                    required: [authorized, scope, service, version, capabilities]
+                    properties:
+                      authorized: { const: true }
+                      scope: { enum: [read, write, admin] }
+                      service: { const: NachoPanel }
+                      version: { type: string }
+                      capabilities:
+                        type: array
+                        items: { type: string }
+        "401": { description: Key is invalid or revoked }
+  /server/status:
+    get:
+      summary: Read cloud runtime status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Runtime status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, data]
+                properties:
+                  ok: { const: true }
+                  data:
+                    type: object
+                    required: [service, version, uptimeSeconds, database, storage, installerGateway, clients, activeTasks]
+                    properties:
+                      service: { const: NachoPanel }
+                      version: { type: string }
+                      uptimeSeconds: { type: integer, minimum: 0 }
+                      database: { $ref: "#/components/schemas/DependencyStatus" }
+                      storage: { $ref: "#/components/schemas/DependencyStatus" }
+                      installerGateway: { type: object, additionalProperties: true }
+                      clients: { type: integer, minimum: 0 }
+                      activeTasks: { type: integer, minimum: 0 }
+        "403": { description: Administrator scope is required }
+  /clients:
+    get:
+      summary: List managed Windows clients
+      responses:
+        "200":
+          description: Clients ordered by most recent heartbeat
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientListResponse"
+        "401": { description: Management API Key is missing or invalid }
+  /deployments:
+    get:
+      summary: List recent deployment campaigns
+      responses:
+        "200": { description: Up to 50 deployment campaigns }
+        "401": { description: Management API Key is missing or invalid }
+    post:
+      summary: Create a time-limited Windows deployment campaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, authMode]
+              properties:
+                name: { type: string, minLength: 1 }
+                authMode: { enum: [required, disabled] }
+                expectedCount: { type: integer, minimum: 1 }
+                ttlMinutes: { type: integer, minimum: 5, maximum: 10080, default: 60 }
+      responses:
+        "201":
+          description: Campaign including one-time IRM commands and enrollment token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentResponse"
+        "403": { description: Write scope is required }
+  /install/windows:
+    get:
+      summary: Render the NachoAgent Windows PowerShell installer
+      security: []
+      parameters:
+        - in: query
+          name: token
+          schema: { type: string }
+          description: Required unless server-wide agent authentication is disabled
+      responses:
+        "200":
+          description: PowerShell installer
+          content:
+            text/plain:
+              schema: { type: string }
+        "401": { description: Enrollment token is required, invalid, or expired }
+  /artifacts:
+    post:
+      summary: Upload an artifact for file deployment
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: Stored artifact metadata including SHA-256
+        "413": { description: File is larger than 512 MiB }
+        "403": { description: Write scope is required }
+  /artifacts/{id}/download:
+    get:
+      summary: Download an artifact from an authenticated agent
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - in: query
+          name: clientId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Artifact bytes; x-content-sha256 contains the expected digest
+        "401": { description: Agent credential is invalid }
+        "404": { description: Artifact does not exist }
+  /operations:
+    post:
+      summary: Create a batch operation
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+          description: Reusing a key returns the existing operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OperationRequest"
+      responses:
+        "201":
+          description: Queued operation with one target per client
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResponse"
+        "403": { description: Write scope is required }
+  /operations/preflight:
+    post:
+      summary: Create a read-only user or registry preflight operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OperationRequest"
+      responses:
+        "201": { description: Queued preflight operation }
+        "400": { description: Operation type does not support preflight }
+        "403": { description: Write scope is required }
+  /operations/{id}:
+    get:
+      summary: Read batch and per-client progress
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Current operation state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationResponse"
+        "404": { description: Operation does not exist }
+  /operations/{id}/events:
+    get:
+      summary: Stream changed operation state as server-sent events
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Emits operation events until the operation is terminal
+          content:
+            text/event-stream:
+              schema: { type: string }
+  /operations/{id}/cancel:
+    post:
+      summary: Cancel queued, leased, or running targets
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200": { description: Cancellation recorded }
+        "403": { description: Write scope is required }
+  /operations/{id}/retry:
+    post:
+      summary: Requeue failed or expired targets for 24 hours
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200": { description: Updated operation state }
+        "403": { description: Write scope is required }
+  /audit:
+    get:
+      summary: List the latest 200 audit records
+      responses:
+        "200": { description: Audit records ordered newest first }
+        "403": { description: Administrator scope is required }
+  /agents/register:
+    post:
+      summary: Register or reinstall a Windows agent
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentRegistration"
+      responses:
+        "200":
+          description: Agent identity, polling intervals, and one-time client credential
+        "401": { description: Enrollment token is required, invalid, or expired }
+  /agents/{clientId}/heartbeat:
+    post:
+      summary: Record agent metrics and last-seen time
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ClientId"
+      responses:
+        "200": { description: Server time }
+        "401": { description: Agent credential is invalid }
+  /agents/{clientId}/tasks/claim:
+    post:
+      summary: Lease one queued or expired-lease target
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ClientId"
+      responses:
+        "200": { description: Leased task or null when no task is available }
+        "401": { description: Agent credential is invalid }
+  /agents/{clientId}/tasks/{targetId}/ack:
+    post:
+      summary: Acknowledge execution and extend the task lease
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ClientId"
+        - $ref: "#/components/parameters/TargetId"
+      responses:
+        "200": { description: Task is running with a one-hour lease }
+        "409": { description: Task lease is no longer valid }
+  /agents/{clientId}/tasks/{targetId}/result:
+    post:
+      summary: Submit a structured task result once
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/ClientId"
+        - $ref: "#/components/parameters/TargetId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ok]
+              properties:
+                ok: { type: boolean }
+                result: { type: object, additionalProperties: true }
+                error: { type: string }
+      responses:
+        "200": { description: Result accepted }
+        "409": { description: Result was already submitted or the lease is invalid }
+  /api-keys:
+    get:
+      summary: List active management keys
+      security:
+        - bearerAuth: []
+      responses:
+        "200": { description: Active keys; secrets are never returned }
+        "403": { description: Administrator scope is required }
+    post:
+      summary: Create a management key
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scope]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                scope: { enum: [read, write, admin] }
+      responses:
+        "201": { description: Created key including its one-time secret }
+        "403": { description: Administrator scope is required }
+  /api-keys/{id}:
+    delete:
+      summary: Revoke a management key
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Key revoked }
+        "403": { description: Administrator scope is required }
+components:
+  parameters:
+    ResourceId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+    ClientId:
+      in: path
+      name: clientId
+      required: true
+      schema: { type: string }
+    TargetId:
+      in: path
+      name: targetId
+      required: true
+      schema: { type: string, format: uuid }
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: NachoPanel API Key
+  schemas:
+    Client:
+      type: object
+      required: [id, name, hostname, os, status, lastSeenAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        hostname: { type: string }
+        ip: { type: string }
+        os: { const: Windows }
+        osVersion: { type: string }
+        architecture: { type: string }
+        agentVersion: { type: string }
+        status: { enum: [online, warning, offline] }
+        tags: { type: array, items: { type: string } }
+        group: { type: string }
+        lastSeenAt: { type: string, format: date-time }
+        metrics: { type: object, additionalProperties: true }
+    ClientListResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { type: array, items: { $ref: "#/components/schemas/Client" } }
+    Deployment:
+      type: object
+      required: [id, name, authMode, registeredCount, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        authMode: { enum: [required, disabled] }
+        expectedCount: { type: [integer, "null"] }
+        registeredCount: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        command: { type: string }
+        gatewayCommand: { type: string }
+    DeploymentResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/Deployment" }
+    OperationRequest:
+      type: object
+      required: [type, clientIds, payload]
+      properties:
+        type:
+          enum: [file.deploy, command.execute, message.broadcast, user.query, user.mutate, browser.open, registry.read, registry.mutate]
+        clientIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+        payload: { type: object, additionalProperties: true }
+    OperationTarget:
+      type: object
+      required: [id, clientId, clientName, status, attempt]
+      properties:
+        id: { type: string, format: uuid }
+        clientId: { type: string }
+        clientName: { type: string }
+        status: { enum: [queued, leased, running, succeeded, failed, cancelled, expired] }
+        attempt: { type: integer, minimum: 0 }
+        startedAt: { type: [string, "null"], format: date-time }
+        finishedAt: { type: [string, "null"], format: date-time }
+        result: { type: [object, "null"], additionalProperties: true }
+        error: { type: [string, "null"] }
+    Operation:
+      type: object
+      required: [id, type, status, payload, createdAt, expiresAt, targets]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        status: { enum: [queued, running, completed, failed, partial, cancelled] }
+        payload: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        targets: { type: array, items: { $ref: "#/components/schemas/OperationTarget" } }
+    OperationResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data: { $ref: "#/components/schemas/Operation" }
+    AgentRegistration:
+      type: object
+      required: [clientId, hostname]
+      properties:
+        clientId: { type: string }
+        hostname: { type: string }
+        name: { type: string }
+        enrollmentToken: { type: string }
+        ipAddress: { type: string }
+        macAddress: { type: string }
+        osVersion: { type: string }
+        osArchitecture: { type: string }
+        powershellVersion: { type: string }
+        agentVersion: { type: string }
+        publicKey: { type: string, description: Base64 DER X.509 certificate }
+    DependencyStatus:
+      type: object
+      required: [ok, backend]
+      properties:
+        ok: { type: boolean }
+        backend: { type: string }
+        latencyMs: { type: integer, minimum: 0 }
+    HealthResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { const: true }
+        data:
+          type: object
+          required: [service, version, mode, status, database, storage, time]
+          properties:
+            service: { const: NachoPanel }
+            version: { type: string }
+            mode: { enum: [live, demo] }
+            status: { const: ready }
+            database: { $ref: "#/components/schemas/DependencyStatus" }
+            storage: { $ref: "#/components/schemas/DependencyStatus" }
+            time: { type: string, format: date-time }
