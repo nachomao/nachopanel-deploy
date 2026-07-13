@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: NachoPanel Cloud Management API
-  version: 3.0.0
+  version: 3.0.1
 servers:
   - url: https://panel.example.com/api/v1
 security:
