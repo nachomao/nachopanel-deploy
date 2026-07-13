@@ -563,7 +563,9 @@ install_managed_postgresql() {
   [[ -n "$codename" ]] || fail "Linux distribution codename is unavailable"
 
   log "Installing managed PostgreSQL $POSTGRESQL_VERSION"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-common
+  if ! command -v pg_lsclusters >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql-common
+  fi
   existing_cluster_port=$(pg_lsclusters --no-header | awk -v version="$POSTGRESQL_VERSION" '$1 == version && $2 == "main" { print $3; exit }')
   keyring="/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg"
   install -d -m 0755 "$(dirname "$keyring")"
